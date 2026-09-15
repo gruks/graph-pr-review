@@ -1,4 +1,4 @@
-# Architecture: GraphContext MCP
+# Architecture: graph-pr-review MCP
 
 ## 1. Overview
 

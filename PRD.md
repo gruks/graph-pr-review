@@ -1,8 +1,8 @@
-# PRD: GraphContext MCP — Graph-Based Codebase Memory & PR Review
+# PRD: graph-pr-review — Graph-Based Codebase Memory & PR Review
 
 ## 1. Summary
 
-GraphContext MCP is an MCP (Model Context Protocol) server that indexes a codebase into a graph database (files, functions, classes, and their relationships), layers vector embeddings on top of that graph for semantic retrieval, and exposes both to any connected AI coding agent (Claude Code, Cursor, etc.). The same graph powers two workflows:
+graph-pr-review is an MCP (Model Context Protocol) server that indexes a codebase into a graph database (files, functions, classes, and their relationships), layers vector embeddings on top of that graph for semantic retrieval, and exposes both to any connected AI coding agent (Claude Code, Cursor, etc.). The same graph powers two workflows:
 
 1. **Context-efficient coding** — agents query the graph instead of dumping large portions of the repo into context, cutting token usage for refactors and new-feature work.
 2. **Automated PR review** — on a new pull request, the graph identifies the "blast radius" of a change (what else calls, imports, or depends on the modified code), feeds that focused context to an LLM, and posts review comments directly on the PR via the GitHub API.
@@ -32,23 +32,38 @@ AI coding agents today re-derive a codebase's structure from scratch in every se
 
 ## 5. Competitive Landscape (as of mid-2026)
 
-This space is active — positioning should account for these:
+This is an active, converging space — graph-based + MCP-native codebase context is now a recognized category, not a novel idea. Positioning should account for all of these:
 
-| Tool | Approach | Gap GraphContext MCP can target |
+**Open-source, MCP-native, graph-based (closest direct competitors)**
+
+| Tool | Approach | Notes |
 |---|---|---|
-| Qodo Context Engine | RAG-powered, cross-repo dependency graph for PR review | Cross-repo depth is Enterprise-only, hosted SaaS |
-| Graphite Reviewer | Pre-indexed repo + RAG lookups for fast review on large PRs | Not MCP-native; tied to Graphite's own review platform |
-| Graphify | Open-source CLI turning code/schemas/docs into a queryable knowledge graph | General-purpose graph tool, not focused on PR review loop |
-| code-review-graph / codebase-memory-mcp | MCP-native structural memory for coding agents | Positioned as dev-workflow memory, not paired with automated PR commenting |
+| code-review-graph | 28 MCP tools incl. hub/bridge detection, auto-generated review questions | Best fit cited for JS/React/Node PR review loops; honest published benchmarks show it can lose to a raw file read on small single-file changes |
+| Graphify | Broad knowledge graph: source code (36 tree-sitter grammars) + schemas, infra, docs, transcripts | Largest by adoption (~75k GitHub stars), MIT-licensed, YC S26-backed; PR review is one use case among many, not the focus |
+| codebase-memory-mcp | Type-aware, polyglot-leaning structural index | Recommended over code-review-graph once a codebase outgrows single-language/PR-specific tooling |
+| CodeGraph, Repomix, Serena, grepai | Local, MIT-licensed coding-agent memory tools | Zero cloud egress by default; general agent memory, not PR-review-first |
 
-**Differentiation wedge:** self-hosted/local-first MCP server (code never leaves the user's infra) + a headline, quantifiable token-savings metric + native integration into the agent the developer already uses, rather than a new standalone product.
+**Commercial / enterprise-grade**
+
+| Tool | Approach | Notes |
+|---|---|---|
+| Greptile | Pre-indexed code graph, cross-file reasoning for PR review | Single-repo focus, commercial |
+| Sourcegraph | Context layer + MCP server other reviewers (Copilot, CodeRabbit, Qodo) plug into | Enterprise pricing (~$16K/yr+), infrastructure play rather than an opinionated review product |
+| GitHub Copilot Code Review | Native, assignable PR reviewer inside existing GitHub workflow | Biggest distribution threat — zero setup for anyone already on GitHub |
+| Augment Context Engine | Commercial context retrieval layer, spun out as standalone MCP server Feb 2026 | $252M-funded, signals context engines unbundling from IDEs generally |
+
+**Differentiation, honestly assessed:**
+- No single feature here is unclaimed — the "graph + MCP + blast radius" thesis is already validated by multiple funded/adopted tools.
+- The closest thing to a real wedge: **unifying day-to-day token-efficient coding assistance AND PR review off one shared graph/MCP server**, rather than requiring two separate tools (most competitors pick one lane — see tables above).
+- Secondary wedge: fully local/self-hosted *and* PR-review-first at the same time is a narrower gap than either trait alone — most local-first tools treat PR review as secondary, most PR-review-first tools are cloud/enterprise-priced.
+- Realistic v1 differentiation is narrowing graph-pr-review (a specific niche, e.g. monorepo microservice boundary changes) plus execution/demo quality, not a defensible technical moat.
 
 ## 6. Core User Flows
 
 ### Flow A — Context-efficient coding
 1. Developer asks their agent (via MCP) to implement a feature or refactor.
 2. Agent calls `search_codebase(query)` and/or `get_related_context(file_or_function)` instead of reading full files.
-3. Agent receives graph-scoped, relevant code context and proceeds with the task using fewer tokens.
+3. Agent receives graph-graph-pr-reviewd, relevant code context and proceeds with the task using fewer tokens.
 
 ### Flow B — PR review
 1. New PR opened or updated on a connected GitHub repo.
@@ -74,7 +89,7 @@ This space is active — positioning should account for these:
 ### 7.3 MCP server
 Expose the following tools to connected agents:
 - `search_codebase(query: string)` — semantic search over indexed chunks.
-- `get_related_context(file_or_function: string)` — graph-scoped context for a given symbol.
+- `get_related_context(file_or_function: string)` — graph-graph-pr-reviewd context for a given symbol.
 - `get_dependents(function: string)` — callers/dependents of a given function ("blast radius").
 
 ### 7.4 PR review integration
@@ -98,7 +113,7 @@ Expose the following tools to connected agents:
 
 - Single language support for v1 (Python or JS/TS recommended — pick based on team familiarity).
 - Local-first indexing; no requirement to send full source to a third-party server.
-- MCP server must be usable standalone (via Claude Code, Cursor, or any MCP-compatible agent) without requiring GraphContext's own UI.
+- MCP server must be usable standalone (via Claude Code, Cursor, or any MCP-compatible agent) without requiring graph-pr-review's own UI.
 
 ## 10. Milestones (hackathon build, ~36h)
 
@@ -113,7 +128,7 @@ Expose the following tools to connected agents:
 ## 11. Risks
 
 - **Indexing time on large repos** could exceed demo/session time budgets — mitigate by pre-indexing the demo repo ahead of time.
-- **Scope creep into multi-language/multi-repo support** — explicitly out of scope for v1; resist during build.
+- **graph-pr-review creep into multi-language/multi-repo support** — explicitly out of graph-pr-review for v1; resist during build.
 - **Live demo fragility** — PR selection and repo indexing should be pre-tested, not done live, with a recorded backup.
 - **Competitive saturation** — differentiate on self-hosting, token-savings transparency, and MCP-native distribution rather than competing on review quality alone.
 
@@ -122,3 +137,4 @@ Expose the following tools to connected agents:
 - Graph store choice: SQLite (simpler, faster to ship) vs. Neo4j (more powerful querying, more setup risk) — decide based on team's existing familiarity.
 - Target language for v1 — Python or JS/TS, based on the demo repo chosen.
 - Distribution model post-hackathon: standalone MCP server (open-core) vs. GitHub Marketplace app vs. Claude Code plugin.
+- **Final product name** — "graph-pr-review" is a working title only; confirm domain/trademark availability before using it externally (e.g. on a pitch deck, GitHub repo, or demo).
