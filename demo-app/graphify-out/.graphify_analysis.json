@@ -1,0 +1,94 @@
+{
+  "communities": {
+    "0": [
+      "payment_processor",
+      "test_demo",
+      "test_demo_test_user_service",
+      "user_service",
+      "user_service_userservice",
+      "user_service_userservice_getuser"
+    ],
+    "1": [
+      "payment_processor_paymentprocessor",
+      "payment_processor_paymentprocessor_init",
+      "payment_processor_paymentprocessor_process_payment",
+      "test_demo_test_payment_processor"
+    ],
+    "2": [
+      "user_repository",
+      "user_repository_userrepository",
+      "user_repository_userrepository_findbyid"
+    ]
+  },
+  "cohesion": {
+    "0": 0.6,
+    "1": 0.5,
+    "2": 0.6666666666666666
+  },
+  "gods": [
+    {
+      "id": "user_service_userservice",
+      "label": "UserService",
+      "degree": 7
+    },
+    {
+      "id": "payment_processor_paymentprocessor",
+      "label": "PaymentProcessor",
+      "degree": 6
+    },
+    {
+      "id": "test_demo_test_payment_processor",
+      "label": "test_payment_processor()",
+      "degree": 2
+    },
+    {
+      "id": "test_demo_test_user_service",
+      "label": "test_user_service()",
+      "degree": 2
+    },
+    {
+      "id": "user_repository_userrepository",
+      "label": "UserRepository",
+      "degree": 2
+    }
+  ],
+  "surprises": [
+    {
+      "source": "PaymentProcessor",
+      "target": "UserService",
+      "source_files": [
+        "payment_processor.py",
+        "user_service.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "uses",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "test_payment_processor()",
+      "target": "PaymentProcessor",
+      "source_files": [
+        "test_demo.py",
+        "payment_processor.py"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "connects across different repos/directories; peripheral node `test_payment_processor()` unexpectedly reaches hub `PaymentProcessor`"
+    },
+    {
+      "source": "test_user_service()",
+      "target": "UserService",
+      "source_files": [
+        "test_demo.py",
+        "user_service.py"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "connects across different repos/directories; peripheral node `test_user_service()` unexpectedly reaches hub `UserService`"
+    }
+  ],
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}

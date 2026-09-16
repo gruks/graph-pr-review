@@ -1,0 +1,26 @@
+{
+  "payment_processor.py": {
+    "mtime": 1789550510.929332,
+    "seen": 1789550579.2314196,
+    "ast_hash": "7be7a1c8247c3b0b0399d155680de922",
+    "semantic_hash": "7be7a1c8247c3b0b0399d155680de922"
+  },
+  "test_demo.py": {
+    "mtime": 1789550499.8384132,
+    "seen": 1789550579.2314196,
+    "ast_hash": "605e47bb27b89a9ea2d9da80b2860b75",
+    "semantic_hash": "605e47bb27b89a9ea2d9da80b2860b75"
+  },
+  "user_repository.py": {
+    "mtime": 1789550499.774065,
+    "seen": 1789550579.2314196,
+    "ast_hash": "aa5d5312c4628fdb5d41484daa869e90",
+    "semantic_hash": "aa5d5312c4628fdb5d41484daa869e90"
+  },
+  "user_service.py": {
+    "mtime": 1789550499.7730052,
+    "seen": 1789550579.2314196,
+    "ast_hash": "00b9ae5bcf22d23188e6250323d55b03",
+    "semantic_hash": "00b9ae5bcf22d23188e6250323d55b03"
+  }
+}
