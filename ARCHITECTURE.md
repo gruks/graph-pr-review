@@ -1,152 +1,467 @@
-# Architecture: graph-pr-review MCP
+# Architecture: graph-pr-review
 
 ## 1. Overview
 
-GraphContext MCP has three logical layers sitting behind a single MCP server interface:
+The system is built around one core idea: a persistent codebase intelligence layer that can both answer questions and act on them. The architecture is therefore not just a graph + MCP server for retrieval; it is an autonomous engineering loop that uses the graph and vector store as evidence, then executes, observes, recovers, verifies, and reviews.
 
-1. **Indexing pipeline** — turns a repo into a graph + vector store.
-2. **MCP server** — exposes query tools to any connected agent.
-3. **PR review service** — consumes the same graph/vector store to review GitHub PRs.
+The high-level flow is:
 
-```
-                        ┌─────────────────────────────┐
-                        │        GitHub Repo          │
-                        └──────────────┬───────────────┘
-                                        │ clone / webhook (push, PR events)
-                                        ▼
-                        ┌─────────────────────────────┐
-                        │      Indexing Pipeline       │
-                        │  tree-sitter → AST → Graph    │
-                        │  + chunker → embeddings       │
-                        └──────┬───────────────┬────────┘
-                               │               │
-                               ▼               ▼
-                     ┌──────────────┐  ┌──────────────┐
-                     │  Graph Store  │  │ Vector Store │
-                     │ (SQLite/Neo4j)│  │   (Chroma)   │
-                     └──────┬───────┘  └──────┬───────┘
-                               \               /
-                                ▼             ▼
-                        ┌─────────────────────────────┐
-                        │         MCP Server           │
-                        │  search_codebase()            │
-                        │  get_related_context()        │
-                        │  get_dependents()              │
-                        └──────┬───────────────┬────────┘
-                               │               │
-                    ┌──────────┘               └──────────┐
-                    ▼                                     ▼
-        ┌───────────────────────┐             ┌───────────────────────┐
-        │   Coding Agent          │             │   PR Review Service     │
-        │ (Claude Code, Cursor)   │             │ diff fetch → LLM review │
-        │  calls MCP tools while  │             │  → post comment via     │
-        │  writing/refactoring    │             │     GitHub API          │
-        └───────────────────────┘             └───────────────────────┘
-```
+Code Graph → MCP → Agent → Execute → Recover → Verify → PR Review
 
-## 2. Components
+This architecture directly supports the product thesis in the PRD: graph and MCP are the foundation, but autonomous engineering is the headline feature.
 
-### 2.1 Indexing Pipeline
+---
 
-**Responsibility:** convert raw source files into a queryable graph and a semantically searchable vector index.
+## 2. Core Architecture
 
-- **Parser:** `tree-sitter` grammar for the target language (v1: pick one — Python or JS/TS).
-- **Graph builder:** walks the AST, emits:
-  - Nodes: `File`, `Function`, `Class`
-  - Edges: `IMPORTS`, `CALLS`, `INHERITS_FROM`
-- **Chunker:** splits code along graph node boundaries (function/class), not arbitrary line counts — this is what lets retrieval stay structurally meaningful.
-- **Embedder:** off-the-shelf embedding model, run once per chunk at index time and again on re-index for changed chunks only.
-- **Incremental re-index:** triggered on push/webhook; diffs the AST against the last indexed version and only re-embeds/re-links changed nodes, rather than a full repo re-index every time.
+```text
+                       ┌───────────────────────────────┐
+                       │         Developer / User       │
+                       │      high-level intent         │
+                       └───────────────┬───────────────┘
+                                       │
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │        AI / Coding Agent      │
+                       │ planner → executor → observer │
+                       └───────────────┬───────────────┘
+                                       │
+                                       ▼
+                       ┌───────────────────────────────┐
+                       │            MCP Server          │
+                       │   knowledge + action + verify │
+                       └───────────────┬───────────────┘
+                                       │
+              ┌────────────────────────────┼────────────────────────────┐
+              ▼                            ▼                            ▼
+    ┌──────────────────┐        ┌──────────────────┐        ┌──────────────────┐
+    │ Code Graph       │        │ Vector Index     │        │ Action Layer     │
+    │ - files          │        │ - semantic       │        │ - file ops       │
+    │ - functions      │        │   retrieval      │        │ - patch/apply    │
+    │ - classes        │        │ - code chunks    │        │ - tests          │
+    │ - imports        │        │ - embeddings     │        │ - git            │
+    │ - calls          │        │                  │        │ - GitHub         │
+    │ - inheritance    │        │                  │        │                  │
+    │ - dependencies   │        │                  │        │                  │
+    └──────────────────┘        └──────────────────┘        └──────────────────┘
+              │                            │                            │
+              └────────────────────────────┼────────────────────────────┘
+                                           ▼
+                              ┌──────────────────────┐
+                              │ Repository / Codebase │
+                              │ source files + tests │
+                              └──────────────────────┘
 
-**Data flow:** `repo files → AST per file → graph nodes/edges → graph store` and, in parallel, `graph nodes (function/class bodies) → chunks → embeddings → vector store`.
-
-### 2.2 Graph Store
-
-- **v1 recommendation:** SQLite with an adjacency-list table (`nodes`, `edges`) — minimal setup risk, fast enough for hackathon-scale repos, no separate service to run.
-- **Alternative:** Neo4j, if the team already knows Cypher — gives richer traversal queries (multi-hop dependents, path-finding) at the cost of an extra running service and a learning curve under time pressure.
-- **Schema (minimal):**
-  - `nodes(id, type, name, file_path, start_line, end_line)`
-  - `edges(source_id, target_id, edge_type)`
-
-### 2.3 Vector Store
-
-- Lightweight, embeddable option (e.g., Chroma) to avoid standing up a separate managed service.
-- Stores: chunk text, embedding vector, and a foreign key back to the graph node id, so a vector hit can be resolved back to its structural context (callers, file, etc.) via the graph store.
-
-### 2.4 MCP Server
-
-Exposes three tools to any MCP-compatible agent:
-
-| Tool | Input | Behavior | Output |
-|---|---|---|---|
-| `search_codebase` | free-text query | embeds query, does vector similarity search, resolves hits to graph nodes | ranked list of {file, symbol, snippet} |
-| `get_related_context` | file or function identifier | graph lookup: node + its direct neighbors (imports, calls) | scoped code context, not full file |
-| `get_dependents` | function/class identifier | graph traversal: who calls/imports/inherits this node (1–2 hops) | list of {file, symbol, relationship} — the "blast radius" |
-
-**Design note:** tools return *references* (file paths, line ranges, symbol names) plus small snippets — not entire files — which is the core mechanism behind the token-reduction goal. The calling agent decides whether it needs the full file after seeing the scoped result.
-
-### 2.5 PR Review Service
-
-**Trigger:** GitHub webhook on `pull_request` (opened/synchronize).
-
-**Steps:**
-1. Fetch PR diff via GitHub API.
-2. Parse diff to identify changed functions/classes (map diff hunks back to graph node ids using file path + line ranges).
-3. For each changed node, call `get_dependents()` against the graph store to find blast radius.
-4. Assemble a review prompt: diff + blast-radius context (not the full repo).
-5. Send to LLM, get back structured review comments (file, line, comment text).
-6. Post comments to the PR via GitHub API (`POST /repos/{owner}/{repo}/pulls/{pr}/comments`).
-
-**Failure handling:** if a changed symbol can't be resolved to a graph node (e.g., new file, dynamic code), fall back to diff-only review for that hunk rather than failing the whole PR review.
-
-## 3. Sequence Diagrams (textual)
-
-### 3.1 Agent coding session (token-saving path)
-```
-Developer → Agent: "refactor X to support Y"
-Agent → MCP Server: search_codebase("X related logic")
-MCP Server → Vector Store: similarity search
-Vector Store → MCP Server: top-k chunks
-MCP Server → Graph Store: resolve chunks to nodes + neighbors
-MCP Server → Agent: scoped context (files/snippets, not full repo)
-Agent → Developer: proposed refactor, using far fewer input tokens than a full-repo dump
+                                           │
+                                           ▼
+                              ┌──────────────────────┐
+                              │ Verification +       │
+                              │ Recovery Loop        │
+                              │ - run tests          │
+                              │ - diagnose failure   │
+                              │ - replan             │
+                              │ - retry              │
+                              └──────────────────────┘
+                                           │
+                                           ▼
+                              ┌──────────────────────┐
+                              │ Graph-Aware PR       │
+                              │ Review Engine        │
+                              │ diff + blast radius │
+                              │ + tests + context    │
+                              └──────────────────────┘
 ```
 
-### 3.2 PR review
+---
+
+## 3. Layer Responsibilities
+
+### 3.1 Repository and Source Layer
+
+This is the raw codebase being indexed and modified. It includes source files, tests, configs, and build metadata.
+
+The system treats the repository as the ground truth. Graph nodes, embeddings, and LLM reasoning are only derived views of that source of truth.
+
+### 3.2 Code Graph Layer
+
+The graph is the persistent memory layer for the system.
+
+It stores:
+- Files
+- Functions
+- Classes
+- Methods
+- Imports
+- Calls
+- Inheritance
+- Interfaces
+- Dependencies
+- References
+
+The graph provides the structural context the agent needs to answer:
+- Who calls this function?
+- What depends on this type?
+- What code will break if this signature changes?
+- Which tests are relevant?
+
+### 3.3 Vector / Semantic Layer
+
+The vector store complements the graph with semantic retrieval.
+
+It stores chunked code fragments as embeddings, enabling queries like:
+- "authentication middleware handling JWT expiry"
+- "cache logic for user profile service"
+- "legacy API migration patterns"
+
+The vector layer is not a replacement for the graph; it is a retrieval accelerator for semantic matching. The graph remains the authoritative source of structural truth.
+
+### 3.4 MCP Server Layer
+
+The MCP server exposes tools for three categories:
+
+#### A. Knowledge tools
+- `search_codebase(query)`
+- `get_symbol(name)`
+- `get_related_context(symbol)`
+- `get_dependents(symbol)`
+- `get_dependencies(symbol)`
+- `get_blast_radius(symbol)`
+
+#### B. Action tools
+- `read_file()`
+- `write_file()`
+- `apply_patch()`
+- `run_tests()`
+- `run_typecheck()`
+- `run_linter()`
+- `git_status()`
+- `git_diff()`
+- `create_branch()`
+- `commit_changes()`
+- `create_pr()`
+- `get_pr()`
+- `get_pr_diff()`
+- `post_review_comment()`
+
+#### C. Verification tools
+- validation status checks
+- dependency consistency checks
+- deprecated symbol detection
+- acceptance criteria validation
+
+This is the integration boundary between the repository intelligence system and the user’s AI agent environment.
+
+### 3.5 Autonomous Agent Layer
+
+This layer is responsible for turning intent into verified execution.
+
+It follows this loop:
+
+Intent → Plan → Execute → Observe → Verify → Diagnose/Replan → Execute again
+
+The agent is not merely a conversational assistant. It is an engineering loop with an explicit execution state.
+
+Example execution state:
+
+```json
+{
+  "task": "Replace UserService.getUser",
+  "status": "executing",
+  "current_step": 7,
+  "completed_steps": 6,
+  "failed_steps": 1,
+  "recovery_attempts": 1
+}
 ```
-GitHub → PR Review Service: webhook (PR opened)
-PR Review Service → GitHub API: fetch diff
-PR Review Service → Graph Store: get_dependents(changed symbols)
-PR Review Service → LLM: diff + blast-radius context
-LLM → PR Review Service: review comments
-PR Review Service → GitHub API: post comments on PR
+
+### 3.6 Recovery and Verification Layer
+
+Once code is modified, the system does not assume success.
+
+It runs:
+- tests
+- type checks
+- linting
+- graph consistency checks
+- acceptance criteria checks
+
+If a failure occurs, the system:
+1. Detects the failure
+2. Identifies probable cause
+3. Validates the affected code path
+4. Replans if needed
+5. Retries with a revised approach
+6. Re-runs verification
+
+This is the key systems-level difference between a coding agent and an autonomous engineering system.
+
+### 3.7 PR Review Layer
+
+The PR review engine consumes the same graph and vector context used by the autonomous engineering engine.
+
+It performs:
+1. PR diff retrieval
+2. Changed symbol detection
+3. Graph traversal to find direct and indirect dependents
+4. Risk/blast-radius scoring
+5. Focused context assembly
+6. LLM review generation
+7. GitHub review comment posting
+
+The review is not just a diff review — it is a structural impact review.
+
+---
+
+## 4. Core Execution Flow
+
+### 4.1 Context-Efficient Coding Path
+
+```text
+Developer intent
+      ↓
+AI agent queries search_codebase()
+      ↓
+semantic retrieval + graph traversal
+      ↓
+focused code context
+      ↓
+implementation + validation
+      ↓
+verified result
 ```
 
-## 4. Deployment Model
+### 4.2 Autonomous Engineering Path
 
-- **Local-first for v1:** indexing pipeline, graph store, and MCP server run on the developer's machine (or a self-hosted server the team controls) — source code never leaves their infra. This is the core differentiator vs. hosted competitors.
-- **PR review service** needs a reachable endpoint for GitHub webhooks — can run as a small self-hosted service or a lightweight cloud function, but still queries the locally/privately hosted graph and vector stores rather than re-uploading code to a third party.
-- **Post-hackathon path:** optional hosted tier (team dashboards, org-wide graph, usage analytics) as an upsell on top of the free self-hosted core — see PRD §5 (open-core positioning).
+```text
+Developer: "Replace the legacy API and make sure nothing breaks."
+      ↓
+Understand objective
+      ↓
+Explore architecture via graph + search
+      ↓
+Generate plan
+      ↓
+Modify files
+      ↓
+Run tests / typecheck / lint
+      ↓
+Detect failure
+      ↓
+Diagnose + recover + replan
+      ↓
+Verify final state
+      ↓
+Report completed / auditable trace
+```
 
-## 5. Key Design Decisions & Trade-offs
+### 4.3 PR Review Path
 
-| Decision | Choice for v1 | Trade-off accepted |
+```text
+PR opened or updated
+      ↓
+Fetch diff
+      ↓
+Map changed symbols to graph nodes
+      ↓
+Find direct and indirect dependents
+      ↓
+Assemble structural context
+      ↓
+LLM review of diff + impact + tests
+      ↓
+Post GitHub review comments
+```
+
+---
+
+## 5. Data Model
+
+### 5.1 Graph Model
+
+Minimal V1 schema:
+
+```sql
+nodes (
+  id,
+  type,
+  name,
+  file,
+  start_line,
+  end_line,
+  metadata
+)
+
+edges (
+  source_id,
+  target_id,
+  relationship,
+  metadata
+)
+```
+
+Possible node types:
+- Repository
+- File
+- Function
+- Class
+- Method
+- Interface
+- Variable
+
+Possible relationships:
+- IMPORTS
+- CALLS
+- CONTAINS
+- EXTENDS
+- IMPLEMENTS
+- DEPENDS_ON
+- REFERENCES
+
+### 5.2 Vector Model
+
+Each relevant chunk is stored with:
+- chunk text
+- embedding vector
+- graph node reference
+- file path
+- symbol name
+- line range
+
+This allows the system to map a semantic retrieval result back to the exact structural context needed for execution or review.
+
+---
+
+## 6. Deployment Model
+
+### 6.1 Local-first Architecture
+
+By default, the system runs locally on the developer machine or a self-hosted environment.
+
+This keeps the architecture attractive for teams that want:
+- local code intelligence
+- no full repo upload to third parties
+- control over indexing and usage
+- direct MCP integration with local agent environments
+
+### 6.2 PR Review Service
+
+The GitHub-linked review service can run as:
+- a lightweight webhook listener
+- a scheduled poller
+- a small self-hosted app or cloud worker
+
+It still reads the local or private graph index rather than requiring a separate hosted repo indexing engine.
+
+---
+
+## 7. Safety and Controls
+
+The system performs code execution, patching, and Git operations, so it must be permission-aware.
+
+### Read-only mode
+- search
+- graph traversal
+- analysis
+- review
+
+### Development mode
+- file modification
+- tests
+- git status/diff
+- branch creation
+
+### Restricted operations
+These require explicit user approval:
+- production deployment
+- secret modification
+- destructive database operations
+- PR creation in sensitive repos
+
+Secrets must never be embedded into the code graph or vector database.
+
+---
+
+## 8. Key Architectural Decisions
+
+| Decision | V1 Choice | Why |
 |---|---|---|
-| Graph store | SQLite adjacency table | Simpler/faster to ship; less powerful multi-hop querying than a native graph DB |
-| Language support | Single language | Faster, more reliable parsing; no polyglot generalization yet |
-| Chunking strategy | Function/class boundaries from the graph | More setup than naive line-splitting; much better retrieval relevance |
-| Re-indexing | Incremental on webhook | More engineering than full re-index, but necessary for PR review to be fast enough to be usable |
-| Review scope | Diff + 1–2 hop dependents only | Misses deeper transitive impact; keeps prompt size and latency manageable |
+| Graph store | SQLite adjacency tables | Simple, local-first, fast to prototype |
+| Parse engine | tree-sitter | AST-based structural extraction |
+| Vector store | Chroma or lightweight local vector DB | Easy to run locally |
+| MCP integration | Native MCP server | Works with Claude Code, Cursor, and other tooling |
+| Language support | One language first | Reliability over breadth |
+| Validation | Test + typecheck + lint + graph check | Required for genuine verification |
+| Review scope | Diff + graph blast radius | Focused, explainable, lower token cost |
 
-## 6. Out-of-Scope for v1 (see PRD §3)
+---
 
-- Multi-repo dependency graphs
-- Multi-language parsing in a single index
-- Autonomous PR approval/merge
-- Replacing CI or static analysis tooling
+## 9. Why This Architecture Fits the Challenge
 
-## 7. Open Technical Questions
+The challenge is not just “build an AI code reviewer.”
 
-- Multi-hop depth for `get_dependents` — how many hops before context becomes noise rather than signal?
-- Whether to cache LLM review outputs per-diff-hash to avoid re-reviewing unchanged hunks on PR updates.
-- Auth model for the self-hosted MCP server if/when a team (not just an individual) adopts it.
+The challenge is: build a system that can understand a repository, take action, recover when it fails, and verify its final result.
+
+This architecture satisfies that by combining:
+
+- graph memory for structure
+- semantic retrieval for context
+- MCP tools for agent interaction
+- action execution for real code changes
+- recovery and replanning loops for resilience
+- verification for confidence
+- graph-aware PR review for structural impact
+
+This is why the product is not positioned as just a PR review tool or just a code graph. It is an autonomous engineering system whose same memory layer powers both implementation and review.
+
+---
+
+## 10. Recommended V1 Implementation Shape
+
+```text
+                  ┌────────────────────┐
+                  │ Claude / Cursor    │
+                  │ or MCP client      │
+                  └─────────┬──────────┘
+                            │ MCP
+                            ▼
+                  ┌────────────────────┐
+                  │ MCP Server         │
+                  │ - search           │
+                  │ - context          │
+                  │ - dependents       │
+                  │ - patch            │
+                  │ - run tests        │
+                  └─────────┬──────────┘
+                            │
+          ┌─────────────────┼──────────────────┐
+          ▼                 ▼                  ▼
+   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+   │ SQLite Graph │  │ Vector Store │  │ GitHub APIs  │
+   │ nodes + edges│  │ semantic     │  │ PR + diff    │
+   └──────────────┘  └──────────────┘  └──────────────┘
+          │                 │                 │
+          └─────────────────┼─────────────────┘
+                            ▼
+                    ┌──────────────┐
+                    │ Repository   │
+                    │ source code  │
+                    └──────────────┘
+```
+
+This keeps the stack simple enough for a hackathon while preserving the required emphasis on autonomous engineering and verification.
+
+---
+
+## 11. Summary
+
+The architecture is intentionally built around the same persistent code intelligence layer for three purposes:
+
+1. context-efficient coding
+2. autonomous engineering
+3. graph-aware PR review
+
+The graph is the brain, the vector layer is the semantic assistant, the MCP server is the interface, the agent is the operator, and verification is the witness that tells us the task actually succeeded.
+
+The final product story is not: “AI reviews code with a graph.”
+
+The final product story is: “AI understands a codebase, plans work, acts, recovers, verifies, and reviews code using the same structural memory.”
