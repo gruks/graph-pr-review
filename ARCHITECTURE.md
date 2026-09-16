@@ -2,166 +2,153 @@
 
 ## 1. Overview
 
-The system is built around one core idea: a persistent codebase intelligence layer that can both answer questions and act on them. The architecture is therefore not just a graph + MCP server for retrieval; it is an autonomous engineering loop that uses the graph and vector store as evidence, then executes, observes, recovers, verifies, and reviews.
+The architecture is built around a simple but crucial distinction:
 
-The high-level flow is:
+- Graphify provides the repository intelligence substrate.
+- This project provides the autonomous engineering control loop.
 
-Code Graph → MCP → Agent → Execute → Recover → Verify → PR Review
+The system is therefore not just a graph database exposed via MCP. It is a graph-backed execution engine that understands the repository, plans work, executes actions, recovers from failures, verifies the outcome, and then uses the same repository graph to review PRs.
 
-This architecture directly supports the product thesis in the PRD: graph and MCP are the foundation, but autonomous engineering is the headline feature.
+The core flow is:
+
+Graphify-derived Repository Intelligence → MCP → Autonomous Agent → Execute → Recover → Verify → PR Review
 
 ---
 
 ## 2. Core Architecture
 
 ```text
-                       ┌───────────────────────────────┐
-                       │         Developer / User       │
-                       │      high-level intent         │
-                       └───────────────┬───────────────┘
-                                       │
-                                       ▼
-                       ┌───────────────────────────────┐
-                       │        AI / Coding Agent      │
-                       │ planner → executor → observer │
-                       └───────────────┬───────────────┘
-                                       │
-                                       ▼
-                       ┌───────────────────────────────┐
-                       │            MCP Server          │
-                       │   knowledge + action + verify │
-                       └───────────────┬───────────────┘
-                                       │
-              ┌────────────────────────────┼────────────────────────────┐
-              ▼                            ▼                            ▼
-    ┌──────────────────┐        ┌──────────────────┐        ┌──────────────────┐
-    │ Code Graph       │        │ Vector Index     │        │ Action Layer     │
-    │ - files          │        │ - semantic       │        │ - file ops       │
-    │ - functions      │        │   retrieval      │        │ - patch/apply    │
-    │ - classes        │        │ - code chunks    │        │ - tests          │
-    │ - imports        │        │ - embeddings     │        │ - git            │
-    │ - calls          │        │                  │        │ - GitHub         │
-    │ - inheritance    │        │                  │        │                  │
-    │ - dependencies   │        │                  │        │                  │
-    └──────────────────┘        └──────────────────┘        └──────────────────┘
-              │                            │                            │
-              └────────────────────────────┼────────────────────────────┘
-                                           ▼
-                              ┌──────────────────────┐
-                              │ Repository / Codebase │
-                              │ source files + tests │
-                              └──────────────────────┘
-
-                                           │
-                                           ▼
-                              ┌──────────────────────┐
-                              │ Verification +       │
-                              │ Recovery Loop        │
-                              │ - run tests          │
-                              │ - diagnose failure   │
-                              │ - replan             │
-                              │ - retry              │
-                              └──────────────────────┘
-                                           │
-                                           ▼
-                              ┌──────────────────────┐
-                              │ Graph-Aware PR       │
-                              │ Review Engine        │
-                              │ diff + blast radius │
-                              │ + tests + context    │
-                              └──────────────────────┘
+                    ┌─────────────────────┐
+                    │   Developer Intent  │
+                    └──────────┬──────────┘
+                               ↓
+                    ┌─────────────────────┐
+                    │ Autonomous Engineer │
+                    │                     │
+                    │ Planner             │
+                    │ Executor            │
+                    │ Observer            │
+                    │ Diagnoser           │
+                    │ Replanner           │
+                    │ Verifier            │
+                    └──────────┬──────────┘
+                               │
+                              MCP
+                               │
+              ┌────────────────┴────────────────┐
+              ↓                                 ↓
+      ┌─────────────────┐              ┌─────────────────┐
+      │ GRAPHIFY CORE   │              │ ACTION LAYER    │
+      │                 │              │                 │
+      │ Code Graph      │              │ Read files      │
+      │ AST             │              │ Apply patches   │
+      │ Calls           │              │ Run tests       │
+      │ Imports         │              │ Run lint        │
+      │ Inheritance     │              │ Git             │
+      │ Dependencies    │              │ GitHub          │
+      │ Query/Path      │              │ Shell           │
+      └────────┬────────┘              └────────┬────────┘
+               │                                │
+               └────────────────┬───────────────┘
+                                ↓
+                         ┌──────────────┐
+                         │ CODEBASE     │
+                         └──────────────┘
+                                │
+                                ↓
+                       Incremental Graph Update
+                                │
+                                ↓
+                    ┌──────────────────────┐
+                    │ Verification Engine  │
+                    └──────────┬───────────┘
+                               │
+                    ┌──────────┴───────────┐
+                    ↓                       ↓
+                 PASS                     FAIL
+                    │                       │
+                    ↓                       ↓
+              PR Generation            Diagnose
+                    │                       │
+                    ↓                       ↓
+             Graph PR Review          Replan
+                    │                       │
+                    └──────────→────────────┘
 ```
 
 ---
 
 ## 3. Layer Responsibilities
 
-### 3.1 Repository and Source Layer
+### 3.1 Repository / Source Layer
+This is the actual codebase the agent must modify and validate. It includes source files, tests, configuration, and build metadata.
 
-This is the raw codebase being indexed and modified. It includes source files, tests, configs, and build metadata.
+The repository is the source of truth. All graph views and LLM reasoning are derived from it.
 
-The system treats the repository as the ground truth. Graph nodes, embeddings, and LLM reasoning are only derived views of that source of truth.
+### 3.2 Graphify Core Layer
+This is the repository intelligence substrate.
 
-### 3.2 Code Graph Layer
+It provides:
+- tree-sitter / AST parsing
+- file, function, class, method and module relationships
+- call/import/inheritance/dependency extraction
+- graph traversal and path analysis
+- graph queries and node inspection
+- incremental repository updates
 
-The graph is the persistent memory layer for the system.
+This layer answers structural questions such as:
+- What calls this function?
+- What depends on this interface?
+- What is the path from AuthController to UserService?
+- Which tests touch this symbol?
 
-It stores:
-- Files
-- Functions
-- Classes
-- Methods
-- Imports
-- Calls
-- Inheritance
-- Interfaces
-- Dependencies
-- References
+### 3.3 MCP Interface Layer
+The MCP server exposes both intelligence and action capabilities to the agent.
 
-The graph provides the structural context the agent needs to answer:
-- Who calls this function?
-- What depends on this type?
-- What code will break if this signature changes?
-- Which tests are relevant?
+#### Intelligence tools
+- `find_symbol`
+- `get_symbol`
+- `find_callers`
+- `find_dependencies`
+- `find_dependents`
+- `trace_path`
+- `get_related_context`
+- `get_change_impact`
 
-### 3.3 Vector / Semantic Layer
+#### Action tools
+- `read_file`
+- `write_file`
+- `apply_patch`
+- `run_command`
+- `run_tests`
+- `run_typecheck`
+- `run_lint`
+- `git_status`
+- `git_diff`
+- `create_branch`
+- `commit_changes`
+- `create_pr`
 
-The vector store complements the graph with semantic retrieval.
+#### Verification tools
+- `verify_tests`
+- `verify_typecheck`
+- `verify_lint`
+- `verify_graph`
+- `verify_references`
+- `verify_objective`
 
-It stores chunked code fragments as embeddings, enabling queries like:
-- "authentication middleware handling JWT expiry"
-- "cache logic for user profile service"
-- "legacy API migration patterns"
+This is the interface between structural intelligence and actionable engineering work.
 
-The vector layer is not a replacement for the graph; it is a retrieval accelerator for semantic matching. The graph remains the authoritative source of structural truth.
+### 3.4 Autonomous Agent Layer
+This is the primary project contribution.
 
-### 3.4 MCP Server Layer
+The agent implements the control loop:
 
-The MCP server exposes tools for three categories:
+Intent → Plan → Execute → Observe → Diagnose/Replan → Verify → Completion
 
-#### A. Knowledge tools
-- `search_codebase(query)`
-- `get_symbol(name)`
-- `get_related_context(symbol)`
-- `get_dependents(symbol)`
-- `get_dependencies(symbol)`
-- `get_blast_radius(symbol)`
+It maintains explicit execution state and works autonomously across the task lifecycle.
 
-#### B. Action tools
-- `read_file()`
-- `write_file()`
-- `apply_patch()`
-- `run_tests()`
-- `run_typecheck()`
-- `run_linter()`
-- `git_status()`
-- `git_diff()`
-- `create_branch()`
-- `commit_changes()`
-- `create_pr()`
-- `get_pr()`
-- `get_pr_diff()`
-- `post_review_comment()`
-
-#### C. Verification tools
-- validation status checks
-- dependency consistency checks
-- deprecated symbol detection
-- acceptance criteria validation
-
-This is the integration boundary between the repository intelligence system and the user’s AI agent environment.
-
-### 3.5 Autonomous Agent Layer
-
-This layer is responsible for turning intent into verified execution.
-
-It follows this loop:
-
-Intent → Plan → Execute → Observe → Verify → Diagnose/Replan → Execute again
-
-The agent is not merely a conversational assistant. It is an engineering loop with an explicit execution state.
-
-Example execution state:
+Example state:
 
 ```json
 {
@@ -170,115 +157,102 @@ Example execution state:
   "current_step": 7,
   "completed_steps": 6,
   "failed_steps": 1,
-  "recovery_attempts": 1
+  "recovery_attempts": 1,
+  "max_recovery_attempts": 3
 }
 ```
 
-### 3.6 Recovery and Verification Layer
-
+### 3.5 Recovery and Verification Layer
 Once code is modified, the system does not assume success.
 
-It runs:
-- tests
-- type checks
+It performs:
+- test execution
+- type checking
 - linting
 - graph consistency checks
-- acceptance criteria checks
+- reference validation
+- objective validation
 
-If a failure occurs, the system:
-1. Detects the failure
-2. Identifies probable cause
-3. Validates the affected code path
-4. Replans if needed
-5. Retries with a revised approach
-6. Re-runs verification
+If a validation step fails, the system must:
+1. detect the failure
+2. analyze the error
+3. query the graph for missing relationships or missed dependents
+4. adjust the plan
+5. retry the patch or additional fix
+6. re-run verification
 
-This is the key systems-level difference between a coding agent and an autonomous engineering system.
+This is a core part of the architecture and a key differentiator from a simple coding assistant.
 
-### 3.7 PR Review Layer
-
-The PR review engine consumes the same graph and vector context used by the autonomous engineering engine.
+### 3.6 PR Review Layer
+The PR review component consumes the same graph used during engineering tasks.
 
 It performs:
-1. PR diff retrieval
-2. Changed symbol detection
-3. Graph traversal to find direct and indirect dependents
-4. Risk/blast-radius scoring
-5. Focused context assembly
-6. LLM review generation
-7. GitHub review comment posting
+1. fetch PR diff
+2. map changed symbols to graph nodes
+3. find direct and indirect dependents
+4. compute blast radius
+5. retrieve focused context
+6. generate review comments
+7. post comments to GitHub
 
-The review is not just a diff review — it is a structural impact review.
+This is graph-aware review, not diff-only review.
 
 ---
 
-## 4. Core Execution Flow
+## 4. Execution Flow
 
-### 4.1 Context-Efficient Coding Path
-
-```text
-Developer intent
-      ↓
-AI agent queries search_codebase()
-      ↓
-semantic retrieval + graph traversal
-      ↓
-focused code context
-      ↓
-implementation + validation
-      ↓
-verified result
-```
-
-### 4.2 Autonomous Engineering Path
+### 4.1 Understand Phase
+The agent discovers repository structure through Graphify.
 
 ```text
-Developer: "Replace the legacy API and make sure nothing breaks."
-      ↓
-Understand objective
-      ↓
-Explore architecture via graph + search
-      ↓
-Generate plan
-      ↓
-Modify files
-      ↓
-Run tests / typecheck / lint
-      ↓
-Detect failure
-      ↓
-Diagnose + recover + replan
-      ↓
-Verify final state
-      ↓
-Report completed / auditable trace
+User intent
+  ↓
+Graphify queries
+  ↓
+Related files, symbols, callers, dependencies
+  ↓
+Technical understanding of the affected area
 ```
 
-### 4.3 PR Review Path
+### 4.2 Plan Phase
+The planner converts the objective into an ordered set of steps.
 
 ```text
-PR opened or updated
-      ↓
-Fetch diff
-      ↓
-Map changed symbols to graph nodes
-      ↓
-Find direct and indirect dependents
-      ↓
-Assemble structural context
-      ↓
-LLM review of diff + impact + tests
-      ↓
-Post GitHub review comments
+Replace legacy API
+  ↓
+Inspect legacy implementation
+  ↓
+Inspect replacement API
+  ↓
+Find callers
+  ↓
+Update affected files
+  ↓
+Update tests
+  ↓
+Validate and verify
 ```
+
+### 4.3 Act Phase
+The executor modifies the repository using local action tools.
+
+### 4.4 Observe / Recover Phase
+The system watches for failures, reads their output, queries the graph for missed dependencies, and updates the execution plan.
+
+### 4.5 Verify Phase
+The system verifies tests, types, lint, graph consistency, and original objective satisfaction before reporting success.
+
+### 4.6 PR Review Phase
+Once the task is complete, the same graph supports the PR review flow.
 
 ---
 
 ## 5. Data Model
 
 ### 5.1 Graph Model
+The graph model is the repository memory layer.
 
-Minimal V1 schema:
+Minimal schema:
 
 ```sql
 nodes (
@@ -299,7 +273,7 @@ edges (
 )
 ```
 
-Possible node types:
+Example node types:
 - Repository
 - File
 - Function
@@ -308,7 +282,7 @@ Possible node types:
 - Interface
 - Variable
 
-Possible relationships:
+Example relationships:
 - IMPORTS
 - CALLS
 - CONTAINS
@@ -317,151 +291,176 @@ Possible relationships:
 - DEPENDS_ON
 - REFERENCES
 
-### 5.2 Vector Model
+### 5.2 Why No Mandatory Vector Index
+The project does not require a vector database in V1 because Graphify is structurally oriented rather than embedding-oriented.
 
-Each relevant chunk is stored with:
-- chunk text
-- embedding vector
-- graph node reference
-- file path
-- symbol name
-- line range
+The system can rely on:
+- graph traversal
+- graph queries
+- path analysis
+- structural context retrieval
+- semantic reasoning through the LLM itself
 
-This allows the system to map a semantic retrieval result back to the exact structural context needed for execution or review.
+Optional vector search may be added later if it materially improves retrieval, but it is not essential to the product story.
 
 ---
 
 ## 6. Deployment Model
 
-### 6.1 Local-first Architecture
+### 6.1 Local-first
+The default environment is local-first. This keeps the system attractive for self-hosted or private-repo workflows.
 
-By default, the system runs locally on the developer machine or a self-hosted environment.
+### 6.2 MCP access
+The agent connects via MCP to both graph intelligence and action tools.
 
-This keeps the architecture attractive for teams that want:
-- local code intelligence
-- no full repo upload to third parties
-- control over indexing and usage
-- direct MCP integration with local agent environments
-
-### 6.2 PR Review Service
-
-The GitHub-linked review service can run as:
-- a lightweight webhook listener
-- a scheduled poller
-- a small self-hosted app or cloud worker
-
-It still reads the local or private graph index rather than requiring a separate hosted repo indexing engine.
+### 6.3 GitHub integration
+The PR-related flows run through GitHub APIs and operate on the same repository graph used during development.
 
 ---
 
-## 7. Safety and Controls
+## 7. Safety and Human Approval
 
-The system performs code execution, patching, and Git operations, so it must be permission-aware.
+The system should support permission-aware execution.
 
-### Read-only mode
+Read-only mode:
 - search
 - graph traversal
 - analysis
 - review
 
-### Development mode
-- file modification
-- tests
-- git status/diff
-- branch creation
+Development mode:
+- modify files
+- run tests
+- run lint
+- git operations
 
-### Restricted operations
-These require explicit user approval:
+Restricted operations:
 - production deployment
 - secret modification
-- destructive database operations
+- destructive actions
 - PR creation in sensitive repos
 
-Secrets must never be embedded into the code graph or vector database.
+These should require explicit approval.
 
 ---
 
-## 8. Key Architectural Decisions
+## 8. Architectural Distinction
 
-| Decision | V1 Choice | Why |
+This distinction is central to the project story:
+
+Graphify = Repository Intelligence
+"What exists?"
+"How is it connected?"
+"What depends on this?"
+"What changed?"
+
+LLM = Reasoning
+"What should I do?"
+"Why did this fail?"
+"What should I try next?"
+"Does this satisfy the objective?"
+
+MCP = Interface
+"How does the agent access knowledge and actions?"
+
+Execution Engine = Autonomy
+"How do I continue until the objective is proven?"
+
+Verification Engine = Trust
+"How do I know the job is actually done?"
+
+This separation is what makes the architecture clear and compelling.
+
+---
+
+## 9. Key Design Decisions
+
+| Decision | V1 Choice | Reason |
 |---|---|---|
-| Graph store | SQLite adjacency tables | Simple, local-first, fast to prototype |
-| Parse engine | tree-sitter | AST-based structural extraction |
-| Vector store | Chroma or lightweight local vector DB | Easy to run locally |
-| MCP integration | Native MCP server | Works with Claude Code, Cursor, and other tooling |
-| Language support | One language first | Reliability over breadth |
-| Validation | Test + typecheck + lint + graph check | Required for genuine verification |
-| Review scope | Diff + graph blast radius | Focused, explainable, lower token cost |
+| Core intelligence | Graphify-derived graph | fast, deterministic, repository-accurate |
+| MCP | Python MCP server | standard agent interface |
+| Execution model | planner + executor + recovery loop | enables genuine autonomy |
+| Vector DB | optional / not required | avoid unnecessary complexity |
+| Validation | tests + typecheck + lint + graph consistency | needed for trustworthy completion |
+| Review model | diff + graph blast radius + context | more robust than diff-only review |
 
 ---
 
-## 9. Why This Architecture Fits the Challenge
-
-The challenge is not just “build an AI code reviewer.”
-
-The challenge is: build a system that can understand a repository, take action, recover when it fails, and verify its final result.
-
-This architecture satisfies that by combining:
-
-- graph memory for structure
-- semantic retrieval for context
-- MCP tools for agent interaction
-- action execution for real code changes
-- recovery and replanning loops for resilience
-- verification for confidence
-- graph-aware PR review for structural impact
-
-This is why the product is not positioned as just a PR review tool or just a code graph. It is an autonomous engineering system whose same memory layer powers both implementation and review.
-
----
-
-## 10. Recommended V1 Implementation Shape
+## 10. Recommended Implementation Shape
 
 ```text
-                  ┌────────────────────┐
-                  │ Claude / Cursor    │
-                  │ or MCP client      │
-                  └─────────┬──────────┘
-                            │ MCP
-                            ▼
-                  ┌────────────────────┐
-                  │ MCP Server         │
-                  │ - search           │
-                  │ - context          │
-                  │ - dependents       │
-                  │ - patch            │
-                  │ - run tests        │
-                  └─────────┬──────────┘
-                            │
-          ┌─────────────────┼──────────────────┐
-          ▼                 ▼                  ▼
-   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-   │ SQLite Graph │  │ Vector Store │  │ GitHub APIs  │
-   │ nodes + edges│  │ semantic     │  │ PR + diff    │
-   └──────────────┘  └──────────────┘  └──────────────┘
-          │                 │                 │
-          └─────────────────┼─────────────────┘
-                            ▼
-                    ┌──────────────┐
-                    │ Repository   │
-                    │ source code  │
-                    └──────────────┘
+graph-pr-review/
+├── graphify/                 # upstream dependency or extracted graph foundation
+├── agent/
+│   ├── planner.py
+│   ├── executor.py
+│   ├── observer.py
+│   ├── diagnoser.py
+│   ├── replanner.py
+│   └── state.py
+├── tools/
+│   ├── filesystem.py
+│   ├── patch.py
+│   ├── shell.py
+│   ├── testing.py
+│   ├── git.py
+│   └── github.py
+├── verification/
+│   ├── tests.py
+│   ├── static.py
+│   ├── graph.py
+│   └── objective.py
+├── review/
+│   ├── diff.py
+│   ├── blast_radius.py
+│   ├── context.py
+│   └── reviewer.py
+├── mcp/
+│   ├── server.py
+│   └── tools.py
+├── benchmarks/
+├── demos/
+├── README.md
+├── PRD.md
+├── ARCHITECTURE.md
+└── THIRD_PARTY.md
 ```
 
-This keeps the stack simple enough for a hackathon while preserving the required emphasis on autonomous engineering and verification.
+This gives the project a clean separation between:
+- Graphify-derived structural intelligence
+- custom autonomous engineering logic
+- validation and review modules
 
 ---
 
-## 11. Summary
+## 11. Why This Architecture fits the Challenge
 
-The architecture is intentionally built around the same persistent code intelligence layer for three purposes:
+The challenge is not just “build a better code graph.”
 
-1. context-efficient coding
-2. autonomous engineering
-3. graph-aware PR review
+The challenge is to build a system that can:
+- understand a repository
+- decide what to do
+- act on that understanding
+- observe failures
+- recover and replan
+- verify the result
+- review the PR with structural evidence
 
-The graph is the brain, the vector layer is the semantic assistant, the MCP server is the interface, the agent is the operator, and verification is the witness that tells us the task actually succeeded.
+This architecture satisfies that challenge directly.
 
-The final product story is not: “AI reviews code with a graph.”
+It is the difference between:
 
-The final product story is: “AI understands a codebase, plans work, acts, recovers, verifies, and reviews code using the same structural memory.”
+- “here is some relevant code” and
+- “here is a system that can complete the engineering objective and prove it.”
+
+---
+
+## 12. Summary
+
+The architecture is intentionally built around Graphify as the repository-intelligence substrate and the project’s custom engineering layer as the actual product innovation.
+
+The resulting system is not “a fork of Graphify.”
+
+It is a graph-powered autonomous engineering agent that uses Graphify for structural truth, extends it with execution and recovery, and adds graph-aware PR review on top.
+
+This is the project’s real technical story and the strongest match for the hackathon challenge.
